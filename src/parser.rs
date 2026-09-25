@@ -86,13 +86,9 @@ fn string_content(input: Span) -> IResult<Span, &str> {
             '\\' if !escaped => {
                 escaped = true;
             }
-            '\n' if !escaped => {
-                let err = nom::error::Error {
-                    input: input.take_from(j),
-                    code: nom::error::ErrorKind::Char,
-                };
-                return Err(nom::Err::Error(err));
-            }
+            // A newline does not end a string: the toolchain's own files write
+            // keys that run over several lines, such as a long `defined(A) ||
+            // defined(B)` condition.
             '"' if !escaped => {
                 return Ok((input.take_from(j), &buf[0..j]));
             }
@@ -158,7 +154,10 @@ pub(crate) fn parse_next_token(input: Span) -> IResult<Span, Token> {
             value(Token::ObjectEnd, tag("}")),
             value(Token::ArrayStart, tag("[")),
             value(Token::ArrayEnd, tag("]")),
-            value(Token::Equals, tag("=")),
+            // The toolchain's own files mix both spellings of the separator, so
+            // a colon separates a key from its value just like an equals sign.
+            // Identifiers already stop at a colon.
+            value(Token::Equals, alt((tag("="), tag(":")))),
             value(Token::Null, null),
             map(bool, Token::Boolean),
             map(integer, Token::Integer),
@@ -177,10 +176,20 @@ pub(crate) fn parse_null(input: Span) -> IResult<Span, Token> {
     preceded(optional, value(Token::Null, null)).parse(input)
 }
 
+/// Parses the separator between two entries of a table or a list.
+///
+/// The strict dialect wants a comma or a newline there. The toolchain's own
+/// files pack entries onto one line - `{ if: "num_skin_weights() == 4" define:
+/// { "macros": [...] } }` - so a missing separator is read as one. This only
+/// accepts more than the strict dialect did: a file that parsed before still
+/// parses the same way.
 pub(crate) fn parse_separator(input: Span) -> IResult<Span, Token> {
     preceded(
         opt(horizontal_whitespace),
-        value(Token::Separator, separator),
+        alt((
+            value(Token::Separator, separator),
+            value(Token::Separator, tag("")),
+        )),
     )
     .parse(input)
 }
@@ -347,13 +356,12 @@ mod test {
         }
 
         {
+            // A string may run over several lines: the toolchain's files write
+            // keys that do, such as a long `defined(A) || defined(B)`.
             let input = Span::from("\"foo\nbar\"");
             assert_eq!(
                 delimited_string(input),
-                Err(Err::Failure(Error::new(
-                    unsafe { Span::new_from_raw_offset(4, 1, "\nbar\"", ()) },
-                    ErrorKind::Char
-                )))
+                Ok((input.take_from(9), "foo\nbar"))
             );
         }
     }
@@ -461,6 +469,74 @@ packages = [
                 Token::String(String::from("bar")),
                 Token::Equals,
                 Token::Integer(2),
+            ],
+        );
+    }
+
+    // The toolchain's shader declarations write `key: value`.
+    #[test]
+    fn parse_colon_separator() {        let sjson = r#"{ if: "num_skin_weights() == 4" define: { "macros": ["A"] } }"#;
+        check_parse_result(
+            sjson,
+            [
+                Token::ObjectStart,
+                Token::String(String::from("if")),
+                Token::Equals,
+                Token::String(String::from("num_skin_weights() == 4")),
+                Token::String(String::from("define")),
+                Token::Equals,
+                Token::ObjectStart,
+                Token::String(String::from("macros")),
+                Token::Equals,
+                Token::ArrayStart,
+                Token::String(String::from("A")),
+                Token::ArrayEnd,
+                Token::ObjectEnd,
+                Token::ObjectEnd,
+            ],
+        );
+    }
+
+    // The same declarations pack a table's entries onto one line.
+    #[test]
+    fn parse_entries_without_a_separator() {
+        let sjson = r#"{ default = true }"#;
+        check_parse_result(
+            sjson,
+            [
+                Token::ObjectStart,
+                Token::String(String::from("default")),
+                Token::Equals,
+                Token::Boolean(true),
+                Token::ObjectEnd,
+            ],
+        );
+        // A separator is still read as one, so a strict file is unaffected.
+        let sjson = "foo = 1,\nbar = 2";
+        check_parse_result(
+            sjson,
+            [
+                Token::String(String::from("foo")),
+                Token::Equals,
+                Token::Integer(1),
+                Token::Separator,
+                Token::String(String::from("bar")),
+                Token::Equals,
+                Token::Integer(2),
+            ],
+        );
+    }
+
+    // A key of the toolchain's files can run over several lines.
+    #[test]
+    fn parse_a_string_over_several_lines() {
+        let text = "\"defined(A) ||\n\tdefined(B)\" = 1";
+        check_parse_result(
+            text,
+            [
+                Token::String(String::from("defined(A) ||\n\tdefined(B)")),
+                Token::Equals,
+                Token::Integer(1),
             ],
         );
     }

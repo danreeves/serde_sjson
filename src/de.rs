@@ -395,7 +395,12 @@ impl<'de> serde::de::Deserializer<'de> for &mut Deserializer<'de> {
     where
         V: serde::de::Visitor<'de>,
     {
+        // A key is either a bare word or a quoted string. A derived struct reads
+        // its field names through here, and the toolchain's own files quote the
+        // keys of some tables (`"macros": [...]`), so both spellings are a key.
         if let Ok(Token::String(val)) = self.parse(&parse_identifier) {
+            visitor.visit_str(&val)
+        } else if let Ok(Token::String(val)) = self.parse(&parse_string) {
             visitor.visit_str(&val)
         } else {
             Err(self.error(ErrorCode::ExpectedString))
