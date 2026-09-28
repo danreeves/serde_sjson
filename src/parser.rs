@@ -1,7 +1,7 @@
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_until};
 use nom::character::complete::{char, digit1, none_of, not_line_ending, one_of};
-use nom::combinator::{cut, eof, map, map_res, opt, recognize, value};
+use nom::combinator::{cut, eof, map, map_res, not, opt, peek, recognize, value};
 use nom::multi::many1_count;
 use nom::number::complete::double;
 use nom::sequence::{delimited, preceded, terminated};
@@ -50,9 +50,18 @@ fn bool(input: Span) -> IResult<Span, bool> {
 }
 
 fn integer(input: Span) -> IResult<Span, i64> {
-    map_res(recognize((opt(char('-')), digit1)), |val: Span| {
-        val.fragment().parse::<i64>()
-    })
+    map_res(
+        recognize((
+            opt(char('-')),
+            digit1,
+            // A number that continues with a fraction or an exponent is a float,
+            // so the integer alternative must not take its leading digits: the
+            // toolchain writes `value = [0.0 0.0 0.0]`, and without this `0.0`
+            // parsed as `0` then `.0`.
+            not(peek(one_of(".eE"))),
+        )),
+        |val: Span| val.fragment().parse::<i64>(),
+    )
     .parse(input)
 }
 
