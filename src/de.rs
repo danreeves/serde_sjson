@@ -441,6 +441,13 @@ impl<'de> serde::de::SeqAccess<'de> for Separated<'_, 'de> {
             return Err(self.de.error(ErrorCode::ExpectedArraySeparator));
         }
 
+        // A separator with nothing after it closes the list: the dialect's
+        // writers leave a trailing newline there, and an exporter that writes
+        // commas leaves a trailing comma. Both mean the same as no separator.
+        if !self.first && self.de.peek_token()? == Token::ArrayEnd {
+            return Ok(None);
+        }
+
         self.first = false;
 
         // TODO: Shouldn't I check that this is a valid value?
@@ -461,6 +468,11 @@ impl<'de> serde::de::MapAccess<'de> for Separated<'_, 'de> {
 
         if !self.first && self.de.parse(&parse_separator)? != Token::Separator {
             return Err(self.de.error(ErrorCode::ExpectedMapSeparator));
+        }
+
+        // See the list case: a trailing separator closes the table.
+        if !self.first && matches!(self.de.peek_token()?, Token::ObjectEnd | Token::Eof) {
+            return Ok(None);
         }
 
         self.first = false;
@@ -640,6 +652,20 @@ mod test {
     2
     3
 ]"
+        );
+    }
+
+    // A separator with nothing after it closes the list or table: the dialect's
+    // writers leave a trailing newline, and comma-writing exporters leave a
+    // trailing comma.
+    #[test]
+    fn deserialize_trailing_separator() {
+        assert_value_ok!(Vec<u64>, vec![1, 2], "[1, 2,]");
+        assert_value_ok!(Vec<u64>, vec![1, 2], "[\n\t1\n\t2,\n]");
+        assert_value_ok!(
+            std::collections::BTreeMap<String, u64>,
+            std::collections::BTreeMap::from([(String::from("a"), 1)]),
+            "{ a = 1, }"
         );
     }
 
